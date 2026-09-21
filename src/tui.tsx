@@ -1,13 +1,19 @@
 import { useKeyboard } from "@opentui/solid"
-import { createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show } from "solid-js"
+import { onCleanup, onMount, Show } from "solid-js"
 import type { TuiPlugin, TuiPluginApi, TuiPromptRef } from "@opencode-ai/plugin/tui"
-import { bestMatch as bestMatchOrig, loadHistory, type HistoryEntry } from "./history"
-const bestMatch = bestMatchOrig as (input: string, entries: HistoryEntry[]) => HistoryEntry | undefined
+import { bestMatch, loadHistory, type HistoryEntry } from "./history"
 
 const id = "opencode-autocomplete"
 const PROMPT_SYNC_MS = 50
 const MIN_INPUT_LENGTH = 4
 
+/**
+ * Solid's reactivity does NOT work across the plugin boundary: the plugin
+ * bundles its own solid-js instance while the host TUI uses its own, so
+ * signals never trigger host-side renders. Everything below therefore works
+ * imperatively: a 50ms poll reads the focused editor, and the suggestion line
+ * is updated by writing to the renderable directly.
+ */
 function PromptWithHistoryAutocomplete(props: {
   api: TuiPluginApi
   bindPrompt: (ref: TuiPromptRef | undefined) => void
@@ -17,98 +23,126 @@ function PromptWithHistoryAutocomplete(props: {
   disabled?: boolean
   onSubmit?: () => void
 }) {
-  const [prompt, setPrompt] = createSignal<TuiPromptRef>()
-  const [input, setInput] = createSignal("")
-  const [dismissedInput, setDismissedInput] = createSignal<string>()
-  const [history, { refetch }] = createResource(() => true, () => loadHistory(), {
-    initialValue: [] as HistoryEntry[],
-  })
+  let lineText: { content: string } | undefined
+  let entries: HistoryEntry[] = loadHistory()
+  let currentSuggestion: HistoryEntry | undefined
+  let dismissedInput = ""
+  let lastInput = ""
 
-  const bind = (ref: TuiPromptRef | undefined) => {
-    setPrompt(ref)
-    props.bindPrompt(ref)
-    props.hostRef?.(ref)
+  const focusedText = (): string => {
+    const ed = (props.api.renderer as unknown as { currentFocusedEditor?: { plainText?: string } })
+      .currentFocusedEditor
+    return typeof ed?.plainText === "string" ? ed.plainText : ""
   }
 
-  // The prompt ref exposes current state but no onInput hook, so mirror it.
-  createEffect(() => {
-    const ref = prompt()
-    if (!ref) {
-      setInput("")
-      return
-    }
-    const sync = () => {
-      const next = ref.current.input
-      setInput((prev) => (prev === next ? prev : next))
-    }
-    sync()
-    const timer = setInterval(sync, PROMPT_SYNC_MS)
-    onCleanup(() => clearInterval(timer))
-  })
-
-  // Refresh history when a session goes idle — the just-submitted prompt is
-  // in the database by then and becomes available as a suggestion.
-  createEffect(() => {
-    props.api.event.on("session.idle", () => {
-      void refetch()
-    })
-  })
-
-  const suggestion = createMemo(() => {
-    if (props.disabled || props.visible === false) return undefined
-    const value = input()
+  const compute = (value: string): HistoryEntry | undefined => {
     if (value.length < MIN_INPUT_LENGTH) return undefined
-    if (dismissedInput() === value) return undefined
-    return bestMatch(value, history())
+    if (dismissedInput === value) return undefined
+    return bestMatch(value, entries)
+  }
+
+  const render = (label: string) => {
+    if (lineText && lineText.content !== label) {
+      lineText.content = label
+      props.api.renderer.requestRender()
+    }
+  }
+
+  const update = () => {
+    const value = focusedText()
+    const changed = value !== lastInput
+    lastInput = value
+    if (changed) {
+      currentSuggestion = compute(value)
+      const label = currentSuggestion ? `⇥ ${currentSuggestion.text}` : ""
+      render(label)
+    }
+  }
+
+  // Keep the line in sync even when the poll misses (e.g. history refresh).
+  props.api.event.on("session.idle", () => {
+    entries = loadHistory()
+    currentSuggestion = compute(lastInput)
+    render(currentSuggestion ? `⇥ ${currentSuggestion.text}` : "")
   })
 
-  const accept = () => {
-    const ref = prompt()
-    const match = suggestion()
-    if (!ref || !match) return false
-    ref.set({ input: match.text, mode: ref.current.mode, parts: [...ref.current.parts] })
-    setInput(match.text)
-    setDismissedInput(undefined)
-    ref.focus()
+  const accept = (): boolean => {
+    const match = currentSuggestion
+    if (!match) return false
+    const ed = (
+      props.api.renderer as unknown as { currentFocusedEditor?: { setText(t: string): void; gotoBufferEnd(): void } }
+    ).currentFocusedEditor
+    if (ed && typeof ed.setText === "function") {
+      ed.setText(match.text)
+      ed.gotoBufferEnd()
+    } else {
+      currentPromptRef?.set({ input: match.text, mode: currentPromptRef.current.mode, parts: [] })
+    }
+    dismissedInput = ""
+    lastInput = match.text
+    currentSuggestion = undefined
+    render("")
     props.api.renderer.requestRender()
     return true
   }
 
-  useKeyboard((evt) => {
-    if (!suggestion()) return
-    if (evt.name === "tab") {
-      if (accept()) {
-        evt.preventDefault()
-        evt.stopPropagation()
-      }
-      return
-    }
-    if (evt.name === "escape") {
-      setDismissedInput(input())
-      evt.preventDefault()
-      evt.stopPropagation()
-      return
-    }
-  })
+  let currentPromptRef: TuiPromptRef | undefined
+  const bind = (ref: TuiPromptRef | undefined) => {
+    currentPromptRef = ref
+    props.bindPrompt(ref)
+    props.hostRef?.(ref)
+  }
 
   onMount(() => {
-    // Intercept Enter before the prompt submits when a suggestion is visible.
-    const submitGuard = (evt: { name?: string; raw?: string; sequence?: string; preventDefault: () => void; stopPropagation: () => void }) => {
-      if (!suggestion()) return
-      const name = evt.name?.toLowerCase()
+    const timer = setInterval(update, PROMPT_SYNC_MS)
+    onCleanup(() => clearInterval(timer))
+
+    // Tab/Esc are handled here while the prompt is focused; Enter must be
+    // intercepted BEFORE the host submits, so it goes through the keyInput
+    // queue directly.
+    const keyGuard = (
+      evt: { name?: string; raw?: string; sequence?: string; preventDefault: () => void; stopPropagation: () => void },
+    ): boolean => {
       const isSubmit =
-        name === "return" || name === "linefeed" || name === "enter" ||
+        evt.name === "return" || evt.name === "linefeed" || evt.name === "enter" ||
         evt.raw === "\r" || evt.raw === "\n" ||
         evt.sequence === "\r" || evt.sequence === "\n"
-      if (!isSubmit) return
-      if (accept()) {
+      if (isSubmit && currentSuggestion) {
+        if (accept()) {
+          evt.preventDefault()
+          evt.stopPropagation()
+          return true
+        }
+        return false
+      }
+      if (evt.name === "tab" && currentSuggestion) {
+        if (accept()) {
+          evt.preventDefault()
+          evt.stopPropagation()
+          return true
+        }
+      }
+      if (evt.name === "escape" && currentSuggestion) {
+        dismissedInput = lastInput
+        currentSuggestion = undefined
+        render("")
         evt.preventDefault()
         evt.stopPropagation()
+        return true
       }
+      return false
     }
-    props.api.renderer.keyInput.prependListener("keypress", submitGuard as never)
+
+    const guard = (evt: never) => {
+      keyGuard(evt as never)
+    }
+    props.api.renderer.keyInput.prependListener("keypress", guard as never)
     onCleanup(() => {
-      props.api.renderer.keyInput.removeListener("keypress", submitGuard as never)
+      props.api.renderer.keyInput.removeListener("keypress", guard as never)
+    })
+
+    useKeyboard((evt) => {
+      keyGuard(evt as never)
     })
   })
 
@@ -121,13 +155,11 @@ function PromptWithHistoryAutocomplete(props: {
         onSubmit={props.onSubmit}
         ref={bind}
       />
-      <Show when={suggestion()}>
-        <box paddingLeft={1} paddingRight={1} flexShrink={0}>
-          <text fg={props.api.theme.current.textMuted} wrapMode="none">
-            {"⇥ " + suggestion()!.text}
-          </text>
-        </box>
-      </Show>
+      <box paddingLeft={1} paddingRight={1} flexShrink={0}>
+        <text fg={props.api.theme.current.textMuted} wrapMode="none" ref={(el: unknown) => (lineText = el as { content: string })}>
+          {""}
+        </text>
+      </box>
     </box>
   )
 }
@@ -151,26 +183,22 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         if (value.length < MIN_INPUT_LENGTH) return
         const match = bestMatch(value, loadHistory())
         if (!match) return
-        currentPrompt!.set({ input: match.text, mode: currentPrompt!.current.mode, parts: [...currentPrompt!.current.parts] })
-        currentPrompt!.focus()
+        currentPrompt.set({ input: match.text, mode: currentPrompt.current.mode, parts: [] })
+        currentPrompt.focus()
         api.renderer.requestRender()
       },
     },
   ])
 
   // Runtime check (isHostSlotPlugin) requires a string id even though the
-  // type forbids it (id?: never) — runtime wins.
+  // TuiSlotPlugin type forbids it (id?: never) — runtime wins.
   const slotPlugin = {
-    id: "opencode-autocomplete",
+    id,
     order: 1,
     slots: {
       home_prompt(_ctx: unknown, value: any) {
         return (
-          <PromptWithHistoryAutocomplete
-            api={api}
-            bindPrompt={bindPrompt}
-            hostRef={value.ref}
-          />
+          <PromptWithHistoryAutocomplete api={api} bindPrompt={bindPrompt} hostRef={value.ref} />
         )
       },
       session_prompt(_ctx: unknown, value: any) {
