@@ -15,7 +15,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.tui.json",
+    "build": "tsc -p tsconfig.json && esbuild src/tui.tsx --bundle --format=esm --platform=neutral --outfile=dist/tui.js --external:@opentui/core --external:@opentui/solid --external:@opentui/keymap --external:solid-js --external:@opencode-ai/plugin --external:bun:sqlite",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tui.json --noEmit"
   },
   "peerDependencies": {
@@ -30,6 +30,7 @@
     "@opentui/solid": "^0.5.11",
     "@types/bun": "^1.4.2",
     "@types/node": "^26.6.2",
+    "esbuild": "^0.28.2",
     "solid-js": "^1.9.0",
     "typescript": "^5.7.0"
   }
