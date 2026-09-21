@@ -166,10 +166,13 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     },
   ])
 
-  api.slots.register({
-    order: 100,
+  // Runtime check (isHostSlotPlugin) requires a string id even though the
+  // type forbids it (id?: never) — runtime wins.
+  const slotPlugin = {
+    id: "opencode-autocomplete",
+    order: 1,
     slots: {
-      home_prompt(_ctx, value) {
+      home_prompt(_ctx: unknown, value: any) {
         return (
           <PromptWithHistoryAutocomplete
             api={api}
@@ -178,7 +181,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
           />
         )
       },
-      session_prompt(_ctx, value) {
+      session_prompt(_ctx: unknown, value: any) {
         return (
           <PromptWithHistoryAutocomplete
             api={api}
@@ -192,7 +195,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         )
       },
     },
-  })
+  }
+  api.slots.register(slotPlugin as never)
 }
 
 const plugin = {

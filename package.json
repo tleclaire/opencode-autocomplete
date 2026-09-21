@@ -15,7 +15,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && esbuild src/tui.tsx --bundle --format=esm --platform=neutral --outfile=dist/tui.js --external:@opentui/core --external:@opentui/solid --external:@opentui/keymap --external:solid-js --external:@opencode-ai/plugin --external:bun:sqlite",
+    "build": "tsc -p tsconfig.json && esbuild src/tui.tsx --bundle --format=esm --platform=node --jsx=automatic --jsx-import-source=@opentui/solid --outfile=dist/tui.js --external:@opentui/core --external:@opentui/solid --external:@opentui/keymap --external:solid-js --external:@opencode-ai/plugin --external:bun:sqlite",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tui.json --noEmit"
   },
   "peerDependencies": {

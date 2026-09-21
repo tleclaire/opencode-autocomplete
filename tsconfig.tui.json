@@ -10,7 +10,7 @@
     "skipLibCheck": true,
     "declaration": true,
     "noEmit": false,
-    "jsx": "preserve",
+    "jsx": "react-jsx",
     "jsxImportSource": "@opentui/solid"
   },
   "include": ["src/tui.tsx"]
