@@ -1,25 +1,12 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { appendHistory } from "./history"
 
 /**
- * Server-side module: records every submitted user prompt into a JSONL
- * history file that the TUI module reads for autocomplete suggestions.
+ * Server-side module: no-op. History comes straight from the opencode
+ * SQLite database, read by the TUI module. This entry only exists so the
+ * server plugin loader accepts the package without errors.
  */
-export const AutocompletePlugin: Plugin = async ({ directory }) => {
-  // Global config dir so history is shared across projects.
-  const configDir = process.env.XDG_CONFIG_HOME || `${process.env.HOME}/.config`
-  const dir = `${configDir}/opencode`
-
-  return {
-    "chat.message": async (_input, output) => {
-      if (output.message.role !== "user") return
-      for (const part of output.parts) {
-        if (part.type === "text" && !part.synthetic && !part.ignored) {
-          await appendHistory(dir, part.text)
-        }
-      }
-    },
-  }
+export const AutocompletePlugin: Plugin = async () => {
+  return {}
 }
 
 export default AutocompletePlugin

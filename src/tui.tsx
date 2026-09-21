@@ -19,11 +19,9 @@ function PromptWithHistoryAutocomplete(props: {
   const [prompt, setPrompt] = createSignal<TuiPromptRef>()
   const [input, setInput] = createSignal("")
   const [dismissedInput, setDismissedInput] = createSignal<string>()
-  const [history, { refetch }] = createResource(
-    () => props.api.state.path.config,
-    (configDir) => loadHistory(configDir),
-    { initialValue: [] as HistoryEntry[] },
-  )
+  const [history, { refetch }] = createResource(() => true, () => loadHistory(), {
+    initialValue: [] as HistoryEntry[],
+  })
 
   const bind = (ref: TuiPromptRef | undefined) => {
     setPrompt(ref)
@@ -47,7 +45,8 @@ function PromptWithHistoryAutocomplete(props: {
     onCleanup(() => clearInterval(timer))
   })
 
-  // Refresh history when a session goes idle (a prompt was just submitted).
+  // Refresh history when a session goes idle — the just-submitted prompt is
+  // in the database by then and becomes available as a suggestion.
   createEffect(() => {
     props.api.event.on("session.idle", () => {
       void refetch()
@@ -158,13 +157,11 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
         if (!currentPrompt) return
         const value = currentPrompt.current.input
         if (value.length < MIN_INPUT_LENGTH) return
-        void loadHistory(api.state.path.config).then((entries) => {
-          const match = bestMatch(value, entries)
-          if (!match) return
-          currentPrompt!.set({ input: match.text, mode: currentPrompt!.current.mode, parts: [...currentPrompt!.current.parts] })
-          currentPrompt!.focus()
-          api.renderer.requestRender()
-        })
+        const match = bestMatch(value, loadHistory())
+        if (!match) return
+        currentPrompt!.set({ input: match.text, mode: currentPrompt!.current.mode, parts: [...currentPrompt!.current.parts] })
+        currentPrompt!.focus()
+        api.renderer.requestRender()
       },
     },
   ])
