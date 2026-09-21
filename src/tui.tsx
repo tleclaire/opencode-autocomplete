@@ -1,7 +1,8 @@
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show } from "solid-js"
 import type { TuiPlugin, TuiPluginApi, TuiPromptRef } from "@opencode-ai/plugin/tui"
-import { bestMatch, loadHistory, type HistoryEntry } from "./history"
+import { bestMatch as bestMatchOrig, loadHistory, type HistoryEntry } from "./history"
+const bestMatch = bestMatchOrig as (input: string, entries: HistoryEntry[]) => HistoryEntry | undefined
 
 const id = "opencode-autocomplete"
 const PROMPT_SYNC_MS = 50
@@ -113,22 +114,6 @@ function PromptWithHistoryAutocomplete(props: {
 
   return (
     <box>
-      <Show when={suggestion()}>
-        <box
-          position="absolute"
-          top={-1}
-          left={0}
-          right={0}
-          zIndex={100}
-          paddingLeft={1}
-          paddingRight={1}
-          backgroundColor={props.api.theme.current.backgroundPanel}
-        >
-          <text fg={props.api.theme.current.textMuted} wrapMode="none">
-            {suggestion()!.text}
-          </text>
-        </box>
-      </Show>
       <props.api.ui.Prompt
         sessionID={props.sessionID}
         visible={props.visible}
@@ -136,6 +121,13 @@ function PromptWithHistoryAutocomplete(props: {
         onSubmit={props.onSubmit}
         ref={bind}
       />
+      <Show when={suggestion()}>
+        <box paddingLeft={1} paddingRight={1} flexShrink={0}>
+          <text fg={props.api.theme.current.textMuted} wrapMode="none">
+            {"⇥ " + suggestion()!.text}
+          </text>
+        </box>
+      </Show>
     </box>
   )
 }
