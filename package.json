@@ -1,0 +1,35 @@
+{
+  "name": "opencode-autocomplete",
+  "version": "0.1.0",
+  "description": "History-based autocomplete for the opencode TUI prompt",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./tui": {
+      "types": "./dist/tui.d.ts",
+      "default": "./dist/tui.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.tui.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tui.json --noEmit"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.18.31",
+    "@opentui/core": ">=0.1.99",
+    "@opentui/solid": ">=0.1.99",
+    "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.31",
+    "@opentui/core": "^0.5.11",
+    "@opentui/solid": "^0.5.11",
+    "@types/node": "^26.6.2",
+    "solid-js": "^1.9.0",
+    "typescript": "^5.7.0"
+  }
+}
