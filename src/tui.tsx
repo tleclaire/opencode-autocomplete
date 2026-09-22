@@ -97,24 +97,11 @@ function PromptWithHistoryAutocomplete(props: {
     const timer = setInterval(update, PROMPT_SYNC_MS)
     onCleanup(() => clearInterval(timer))
 
-    // Tab/Esc are handled here while the prompt is focused; Enter must be
-    // intercepted BEFORE the host submits, so it goes through the keyInput
-    // queue directly.
+    // Tab/Esc are handled here while the prompt is focused. Enter is NOT
+    // intercepted: it always submits the prompt as-is.
     const keyGuard = (
       evt: { name?: string; raw?: string; sequence?: string; preventDefault: () => void; stopPropagation: () => void },
     ): boolean => {
-      const isSubmit =
-        evt.name === "return" || evt.name === "linefeed" || evt.name === "enter" ||
-        evt.raw === "\r" || evt.raw === "\n" ||
-        evt.sequence === "\r" || evt.sequence === "\n"
-      if (isSubmit && currentSuggestion) {
-        if (accept()) {
-          evt.preventDefault()
-          evt.stopPropagation()
-          return true
-        }
-        return false
-      }
       if (evt.name === "tab" && currentSuggestion) {
         if (accept()) {
           evt.preventDefault()
