@@ -108,30 +108,31 @@ export function loadHistory(): HistoryEntry[] {
 }
 
 /**
+ * All history matches for the current input, in preference order:
+ * prefix matches (newest first), then substring matches (newest first).
+ * Never includes the input itself.
+ */
+export function matchAll(input: string, entries: HistoryEntry[]): HistoryEntry[] {
+  const value = input.trim()
+  if (value.length < MIN_LENGTH) return []
+  const lower = value.toLowerCase()
+
+  const prefixes: HistoryEntry[] = []
+  const substrings: HistoryEntry[] = []
+  for (const entry of entries) {
+    if (entry.text === value) continue
+    const entryLower = entry.text.toLowerCase()
+    if (entryLower.startsWith(lower)) prefixes.push(entry)
+    else if (entryLower.includes(lower)) substrings.push(entry)
+  }
+  return [...prefixes, ...substrings]
+}
+
+/**
  * Find the best history match for the current input.
  * Preference: prefix match (newest first), then substring match.
  * Never returns the input itself.
  */
 export function bestMatch(input: string, entries: HistoryEntry[]): HistoryEntry | undefined {
-  const value = input.trim()
-  if (value.length < MIN_LENGTH) return undefined
-  const lower = value.toLowerCase()
-
-  let prefix: HistoryEntry | undefined
-  let substring: HistoryEntry | undefined
-
-  // Entries are newest-first; first hit wins ties.
-  for (const entry of entries) {
-    const text = entry.text
-    if (text === value) continue
-    const entryLower = text.toLowerCase()
-    if (!prefix && entryLower.startsWith(lower)) {
-      prefix = entry
-    } else if (!substring && entryLower.includes(lower)) {
-      substring = entry
-    }
-    if (prefix) break
-  }
-
-  return prefix ?? substring
+  return matchAll(input, entries)[0]
 }

@@ -4,7 +4,7 @@ import { appendFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { TuiPlugin, TuiPluginApi, TuiPromptRef } from "@opencode-ai/plugin/tui"
-import { bestMatch, databasePath, loadHistory, type HistoryEntry } from "./history"
+import { bestMatch, databasePath, loadHistory, matchAll, type HistoryEntry } from "./history"
 
 const id = "opencode-autocomplete"
 const PROMPT_SYNC_MS = 50
@@ -15,6 +15,10 @@ export type AutocompleteOptions = {
   enabled?: boolean
   /** Key that accepts the suggestion. Default: "tab" */
   acceptKey?: string
+  /** Key that cycles forward through multiple matches. Default: "ctrl+n" */
+  cycleKey?: string
+  /** Key that cycles backward through multiple matches. Default: "ctrl+p" */
+  cycleKeyBack?: string
   /**
    * Write lifecycle diagnostics (module evaluation, slot mount/unmount) to
    * `%TEMP%/opencode-autocomplete-diag.log`. Off by default; turn it on to
@@ -53,17 +57,42 @@ const registry = ((globalThis as unknown as Record<string, Registry>)[registryKe
   registered: false,
 })
 
+type ParsedCombo = { name: string; ctrl: boolean; shift: boolean; meta: boolean; alt: boolean }
+
 // Runtime toggle (shared across slot instances; module scope survives remounts).
 let runtimeEnabled = true
-let acceptKeyName = "tab"
+let acceptKey: ParsedCombo = { name: "tab", ctrl: false, shift: false, meta: false, alt: false }
+let cycleKey: ParsedCombo = { name: "n", ctrl: true, shift: false, meta: false, alt: false }
+let cycleKeyBack: ParsedCombo = { name: "p", ctrl: true, shift: false, meta: false, alt: false }
 
-const keyNameFor = (acceptKey: string | undefined): string => {
-  const k = (acceptKey ?? "tab").toLowerCase()
+const parseCombo = (spec: string | undefined, fallback: ParsedCombo): ParsedCombo => {
+  if (!spec) return fallback
+  const parts = spec.toLowerCase().split("+").map((p) => p.trim()).filter(Boolean)
+  if (!parts.length) return fallback
+  const key = parts.pop() as string
+  const combo: ParsedCombo = { name: key, ctrl: false, shift: false, meta: false, alt: false }
+  for (const mod of parts) {
+    if (mod === "ctrl" || mod === "control") combo.ctrl = true
+    else if (mod === "shift") combo.shift = true
+    else if (mod === "meta" || mod === "super" || mod === "cmd") combo.meta = true
+    else if (mod === "alt" || mod === "option") combo.alt = true
+  }
   // Common aliases -> opentui key names
-  if (k === "esc" || k === "escape") return "escape"
-  if (k === "return" || k === "enter") return "return"
-  return k
+  if (combo.name === "esc") combo.name = "escape"
+  if (combo.name === "return") combo.name = "return"
+  if (combo.name === "enter") combo.name = "return"
+  return combo
 }
+
+const matchesCombo = (
+  evt: { name?: string; ctrl?: boolean; shift?: boolean; meta?: boolean; option?: boolean },
+  combo: ParsedCombo,
+): boolean =>
+  evt.name === combo.name &&
+  Boolean(evt.ctrl) === combo.ctrl &&
+  Boolean(evt.shift) === combo.shift &&
+  Boolean(evt.meta) === combo.meta &&
+  Boolean(evt.option) === combo.alt
 
 /**
  * Solid's reactivity does NOT work across the plugin boundary: the plugin
@@ -84,7 +113,8 @@ function PromptWithHistoryAutocomplete(props: {
 }) {
   let lineText: { content: string } | undefined
   let entries: HistoryEntry[] = loadHistory()
-  let currentSuggestion: HistoryEntry | undefined
+  let matches: HistoryEntry[] = []
+  let matchIndex = 0
   let dismissedInput = ""
   let lastInput = ""
   // Set on unmount. The slot is torn down whenever its view goes away (e.g. the
@@ -99,16 +129,23 @@ function PromptWithHistoryAutocomplete(props: {
     return typeof ed?.plainText === "string" ? ed.plainText : ""
   }
 
-  const compute = (value: string): HistoryEntry | undefined => {
-    if (value.length < MIN_INPUT_LENGTH) return undefined
-    if (dismissedInput === value) return undefined
-    return bestMatch(value, entries)
+  const compute = (value: string): HistoryEntry[] => {
+    if (value.length < MIN_INPUT_LENGTH) return []
+    if (dismissedInput === value) return []
+    return matchAll(value, entries)
   }
 
-  const render = (label: string) => {
+  const label = (): string => {
+    const match = matches[matchIndex]
+    if (!match) return ""
+    return matches.length > 1 ? `⇥ (${matchIndex + 1}/${matches.length}) ${match.text}` : `⇥ ${match.text}`
+  }
+
+  const render = () => {
     if (disposed || !lineText) return
-    if (lineText.content !== label) {
-      lineText.content = label
+    const text = label()
+    if (lineText.content !== text) {
+      lineText.content = text
       props.api.renderer.requestRender()
     }
   }
@@ -118,10 +155,10 @@ function PromptWithHistoryAutocomplete(props: {
     const value = focusedText()
     const changed = value !== lastInput
     lastInput = value
-    if (changed || (!runtimeEnabled && currentSuggestion)) {
-      currentSuggestion = runtimeEnabled ? compute(value) : undefined
-      const label = currentSuggestion ? `⇥ ${currentSuggestion.text}` : ""
-      render(label)
+    if (changed || (!runtimeEnabled && matches.length)) {
+      matches = runtimeEnabled ? compute(value) : []
+      matchIndex = 0
+      render()
     }
   }
 
@@ -131,12 +168,21 @@ function PromptWithHistoryAutocomplete(props: {
   const unsubscribeIdle = props.api.event.on("session.idle", () => {
     if (disposed) return
     entries = loadHistory()
-    currentSuggestion = runtimeEnabled ? compute(lastInput) : undefined
-    render(currentSuggestion ? `⇥ ${currentSuggestion.text}` : "")
+    matches = runtimeEnabled ? compute(lastInput) : []
+    matchIndex = 0
+    render()
   })
 
+  const cycle = (delta: number): boolean => {
+    if (matches.length < 2) return false
+    matchIndex = (matchIndex + delta + matches.length) % matches.length
+    render()
+    props.api.renderer.requestRender()
+    return true
+  }
+
   const accept = (): boolean => {
-    const match = currentSuggestion
+    const match = matches[matchIndex]
     if (!match || disposed) return false
     const ed = (
       props.api.renderer as unknown as { currentFocusedEditor?: { setText(t: string): void; gotoBufferEnd(): void } }
@@ -149,8 +195,9 @@ function PromptWithHistoryAutocomplete(props: {
     }
     dismissedInput = ""
     lastInput = match.text
-    currentSuggestion = undefined
-    render("")
+    matches = []
+    matchIndex = 0
+    render()
     props.api.renderer.requestRender()
     return true
   }
@@ -175,20 +222,47 @@ function PromptWithHistoryAutocomplete(props: {
     // Tab/Esc are handled here while the prompt is focused. Enter is NOT
     // intercepted: it always submits the prompt as-is.
     const keyGuard = (
-      evt: { name?: string; raw?: string; sequence?: string; preventDefault: () => void; stopPropagation: () => void },
+      evt: {
+        name?: string
+        raw?: string
+        sequence?: string
+        ctrl?: boolean
+        shift?: boolean
+        meta?: boolean
+        option?: boolean
+        preventDefault: () => void
+        stopPropagation: () => void
+      },
     ): boolean => {
       if (!runtimeEnabled || disposed) return false
-      if (evt.name === acceptKeyName && currentSuggestion) {
+      if (matchesCombo(evt, cycleKey)) {
+        if (cycle(1)) {
+          evt.preventDefault()
+          evt.stopPropagation()
+          return true
+        }
+        return false
+      }
+      if (matchesCombo(evt, cycleKeyBack)) {
+        if (cycle(-1)) {
+          evt.preventDefault()
+          evt.stopPropagation()
+          return true
+        }
+        return false
+      }
+      if (matchesCombo(evt, acceptKey) && matches.length) {
         if (accept()) {
           evt.preventDefault()
           evt.stopPropagation()
           return true
         }
       }
-      if (evt.name === "escape" && currentSuggestion) {
+      if (evt.name === "escape" && matches.length) {
         dismissedInput = lastInput
-        currentSuggestion = undefined
-        render("")
+        matches = []
+        matchIndex = 0
+        render()
         evt.preventDefault()
         evt.stopPropagation()
         return true
@@ -253,7 +327,9 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
   registry.registered = true
   diag("registering slot plugin")
 
-  acceptKeyName = keyNameFor(opts.acceptKey)
+  acceptKey = parseCombo(opts.acceptKey, { name: "tab", ctrl: false, shift: false, meta: false, alt: false })
+  cycleKey = parseCombo(opts.cycleKey, { name: "n", ctrl: true, shift: false, meta: false, alt: false })
+  cycleKeyBack = parseCombo(opts.cycleKeyBack, { name: "p", ctrl: true, shift: false, meta: false, alt: false })
   runtimeEnabled = true
 
   let currentPrompt: TuiPromptRef | undefined
