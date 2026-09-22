@@ -1,7 +1,10 @@
 import { useKeyboard } from "@opentui/solid"
 import { onCleanup, onMount, Show } from "solid-js"
+import { appendFileSync, existsSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { TuiPlugin, TuiPluginApi, TuiPromptRef } from "@opencode-ai/plugin/tui"
-import { bestMatch, loadHistory, type HistoryEntry } from "./history"
+import { bestMatch, databasePath, loadHistory, type HistoryEntry } from "./history"
 
 const id = "opencode-autocomplete"
 const PROMPT_SYNC_MS = 50
@@ -12,7 +15,43 @@ export type AutocompleteOptions = {
   enabled?: boolean
   /** Key that accepts the suggestion. Default: "tab" */
   acceptKey?: string
+  /**
+   * Write lifecycle diagnostics (module evaluation, slot mount/unmount) to
+   * `%TEMP%/opencode-autocomplete-diag.log`. Off by default; turn it on to
+   * debug double prompts or crashes. Default: false
+   */
+  debug?: boolean
 }
+
+const DIAG_FILE = join(tmpdir(), "opencode-autocomplete-diag.log")
+
+// Distinct per module evaluation: two entries with different values mean the
+// module was loaded twice (e.g. via two differently-normalised paths).
+const moduleInstance = Math.random().toString(36).slice(2, 8)
+const moduleEvaluatedAt = new Date().toISOString()
+
+// Opt-in via the `debug` option; nothing is written unless it is enabled.
+let debugEnabled = false
+
+const diag = (message: string) => {
+  if (!debugEnabled) return
+  try {
+    appendFileSync(DIAG_FILE, `${new Date().toISOString()} [${moduleInstance}] ${message}\n`)
+  } catch {
+    // diagnostics must never break the plugin
+  }
+}
+
+// Registration state lives on globalThis, not in module scope: if opencode
+// evaluates this module twice (e.g. the same origin resolved via both
+// opencode.json and tui.json), a module-scope flag would be reset per instance
+// and each one would mount its own prompt.
+type Registry = { loads: number; registered: boolean }
+const registryKey = "__opencodeAutocompleteRegistry"
+const registry = ((globalThis as unknown as Record<string, Registry>)[registryKey] ??= {
+  loads: 0,
+  registered: false,
+})
 
 // Runtime toggle (shared across slot instances; module scope survives remounts).
 let runtimeEnabled = true
@@ -35,6 +74,7 @@ const keyNameFor = (acceptKey: string | undefined): string => {
  */
 function PromptWithHistoryAutocomplete(props: {
   api: TuiPluginApi
+  slot: string
   bindPrompt: (ref: TuiPromptRef | undefined) => void
   hostRef?: (ref: TuiPromptRef | undefined) => void
   sessionID?: string
@@ -47,6 +87,11 @@ function PromptWithHistoryAutocomplete(props: {
   let currentSuggestion: HistoryEntry | undefined
   let dismissedInput = ""
   let lastInput = ""
+  // Set on unmount. The slot is torn down whenever its view goes away (e.g. the
+  // home prompt while a session is open), but timer ticks and event handlers can
+  // still be in flight. Touching a disposed renderable takes down the native
+  // renderer without a catchable JS error, so every write checks this first.
+  let disposed = false
 
   const focusedText = (): string => {
     const ed = (props.api.renderer as unknown as { currentFocusedEditor?: { plainText?: string } })
@@ -61,13 +106,15 @@ function PromptWithHistoryAutocomplete(props: {
   }
 
   const render = (label: string) => {
-    if (lineText && lineText.content !== label) {
+    if (disposed || !lineText) return
+    if (lineText.content !== label) {
       lineText.content = label
       props.api.renderer.requestRender()
     }
   }
 
   const update = () => {
+    if (disposed) return
     const value = focusedText()
     const changed = value !== lastInput
     lastInput = value
@@ -79,7 +126,10 @@ function PromptWithHistoryAutocomplete(props: {
   }
 
   // Keep the line in sync even when the poll misses (e.g. history refresh).
-  props.api.event.on("session.idle", () => {
+  // The subscription MUST be released on unmount — an orphaned handler keeps
+  // writing into a renderable that no longer exists.
+  const unsubscribeIdle = props.api.event.on("session.idle", () => {
+    if (disposed) return
     entries = loadHistory()
     currentSuggestion = runtimeEnabled ? compute(lastInput) : undefined
     render(currentSuggestion ? `⇥ ${currentSuggestion.text}` : "")
@@ -87,7 +137,7 @@ function PromptWithHistoryAutocomplete(props: {
 
   const accept = (): boolean => {
     const match = currentSuggestion
-    if (!match) return false
+    if (!match || disposed) return false
     const ed = (
       props.api.renderer as unknown as { currentFocusedEditor?: { setText(t: string): void; gotoBufferEnd(): void } }
     ).currentFocusedEditor
@@ -113,15 +163,21 @@ function PromptWithHistoryAutocomplete(props: {
   }
 
   onMount(() => {
+    diag(`slot mounted: ${props.slot}`)
     const timer = setInterval(update, PROMPT_SYNC_MS)
-    onCleanup(() => clearInterval(timer))
+    onCleanup(() => {
+      diag(`slot unmounted: ${props.slot}`)
+      disposed = true
+      clearInterval(timer)
+      unsubscribeIdle()
+    })
 
     // Tab/Esc are handled here while the prompt is focused. Enter is NOT
     // intercepted: it always submits the prompt as-is.
     const keyGuard = (
       evt: { name?: string; raw?: string; sequence?: string; preventDefault: () => void; stopPropagation: () => void },
     ): boolean => {
-      if (!runtimeEnabled) return false
+      if (!runtimeEnabled || disposed) return false
       if (evt.name === acceptKeyName && currentSuggestion) {
         if (accept()) {
           evt.preventDefault()
@@ -173,8 +229,32 @@ function PromptWithHistoryAutocomplete(props: {
 
 const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) => {
   const opts = (options ?? {}) as AutocompleteOptions
+  debugEnabled = opts.debug === true
+
+  if (opts.enabled === false) {
+    diag("tui() invoked but disabled via options")
+    return
+  }
+
+  registry.loads++
+  diag(
+    `module evaluated ${moduleEvaluatedAt} | tui() loads=${registry.loads} registered=${registry.registered} pid=${process.pid}`,
+  )
+  const resolvedDb = databasePath()
+  diag(`database ${resolvedDb} exists=${existsSync(resolvedDb)}`)
+
+  // Register at most once across ALL module instances: the state lives on
+  // globalThis, so a second evaluation of this module cannot mount a second
+  // prompt. (A module-scope flag is not enough — it is per module instance.)
+  if (registry.registered) {
+    diag("tui() skipped: slot plugin already registered")
+    return
+  }
+  registry.registered = true
+  diag("registering slot plugin")
+
   acceptKeyName = keyNameFor(opts.acceptKey)
-  runtimeEnabled = opts.enabled !== false
+  runtimeEnabled = true
 
   let currentPrompt: TuiPromptRef | undefined
   const bindPrompt = (ref: TuiPromptRef | undefined) => {
@@ -219,8 +299,6 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
     },
   ])
 
-  if (opts.enabled === false) return
-
   // Runtime check (isHostSlotPlugin) requires a string id even though the
   // TuiSlotPlugin type forbids it (id?: never) — runtime wins.
   const slotPlugin = {
@@ -229,13 +307,14 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
     slots: {
       home_prompt(_ctx: unknown, value: any) {
         return (
-          <PromptWithHistoryAutocomplete api={api} bindPrompt={bindPrompt} hostRef={value.ref} />
+          <PromptWithHistoryAutocomplete api={api} slot="home" bindPrompt={bindPrompt} hostRef={value.ref} />
         )
       },
       session_prompt(_ctx: unknown, value: any) {
         return (
           <PromptWithHistoryAutocomplete
             api={api}
+            slot="session"
             bindPrompt={bindPrompt}
             hostRef={value.ref}
             sessionID={value.session_id}
