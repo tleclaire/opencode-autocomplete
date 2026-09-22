@@ -59,7 +59,7 @@ Options are passed as the second element of the plugin tuple in `tui.json`:
 | `cycleKey`    | `"ctrl+down"`  | Cycle forward through multiple matches (wrap-around)                                            |
 | `cycleKeyBack`| `"ctrl+up"`    | Cycle backward through multiple matches                                                        |
 | `maxPreviewChars` | `100`      | Cap for the history preview on the suggestion line: first line only, truncated with `…`, multi-line entries annotated `(+N lines)`. Display-only — accepting still inserts the full entry |
-| `debug`       | `false` | Write lifecycle diagnostics to `%TEMP%/opencode-autocomplete-diag.log` (Linux/macOS: `/tmp`) — module evaluation, `tui()` invocations, slot mount/unmount. Nothing is written while it is off. |
+| `debug`       | `false` | Full instrumentation to `%TEMP%/opencode-autocomplete-diag.log` (Linux/macOS: `/tmp`): lifecycle (module eval, `tui()` entry/options, DB path, command/slot registration, slot factory/mount/unmount, key-listener attach), per-section timings (`loadHistory`, `matchAll`, `accept`, poll ticks with avg/max), key events (accept/cycle/dismiss) and a rolling summary every 5s for spotting plugin-induced delays. Nothing is written while it is off. |
 
 When several history entries match, the suggestion line shows the position (`⇥ (2/5) …`); cycle with `ctrl+down`/`ctrl+up`, accept the visible one with `acceptKey`.
 

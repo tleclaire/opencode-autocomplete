@@ -1,11 +1,18 @@
 import { useKeyboard } from "@opentui/solid"
 import { onCleanup, onMount, Show } from "solid-js"
-import { appendFileSync, existsSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { existsSync } from "node:fs"
 import type { TuiPlugin, TuiPluginApi, TuiPromptRef } from "@opencode-ai/plugin/tui"
 import { bestMatch, databasePath, loadHistory, matchAll, type HistoryEntry } from "./history"
 import { DEFAULT_PREVIEW_CHARS, previewOf } from "./preview"
+import {
+  configure as configureDiag,
+  countRender,
+  diag,
+  observeHistory,
+  observeMatch,
+  observePoll,
+  span,
+} from "./diag"
 
 const id = "opencode-autocomplete"
 const PROMPT_SYNC_MS = 50
@@ -27,31 +34,15 @@ export type AutocompleteOptions = {
    */
   maxPreviewChars?: number
   /**
-   * Write lifecycle diagnostics (module evaluation, slot mount/unmount) to
-   * `%TEMP%/opencode-autocomplete-diag.log`. Off by default; turn it on to
-   * debug double prompts or crashes. Default: false
+   * Full instrumentation: lifecycle events, per-section timings (history
+   * loads, matching, accepts) and a rolling summary every 5s, written to
+   * `%TEMP%/opencode-autocomplete-diag.log`. Off by default. Default: false
    */
   debug?: boolean
 }
 
-const DIAG_FILE = join(tmpdir(), "opencode-autocomplete-diag.log")
-
-// Distinct per module evaluation: two entries with different values mean the
-// module was loaded twice (e.g. via two differently-normalised paths).
-const moduleInstance = Math.random().toString(36).slice(2, 8)
+// Distinct per module evaluation: recorded in every diag line (see diag.ts).
 const moduleEvaluatedAt = new Date().toISOString()
-
-// Opt-in via the `debug` option; nothing is written unless it is enabled.
-let debugEnabled = false
-
-const diag = (message: string) => {
-  if (!debugEnabled) return
-  try {
-    appendFileSync(DIAG_FILE, `${new Date().toISOString()} [${moduleInstance}] ${message}\n`)
-  } catch {
-    // diagnostics must never break the plugin
-  }
-}
 
 // Registration state lives on globalThis, not in module scope: if opencode
 // evaluates this module twice (e.g. the same origin resolved via both
@@ -120,7 +111,11 @@ function PromptWithHistoryAutocomplete(props: {
   onSubmit?: () => void
 }) {
   let lineText: { content: string } | undefined
+  const histT0 = performance.now()
   let entries: HistoryEntry[] = loadHistory()
+  const histInitMs = performance.now() - histT0
+  diag(`loadHistory@init ${histInitMs.toFixed(2)}ms entries=${entries.length} slot=${props.slot}`)
+  observeHistory(histInitMs, entries.length)
   let matches: HistoryEntry[] = []
   let matchIndex = 0
   let dismissedInput = ""
@@ -140,7 +135,12 @@ function PromptWithHistoryAutocomplete(props: {
   const compute = (value: string): HistoryEntry[] => {
     if (value.length < MIN_INPUT_LENGTH) return []
     if (dismissedInput === value) return []
-    return matchAll(value, entries)
+    const t0 = performance.now()
+    const result = matchAll(value, entries)
+    const ms = performance.now() - t0
+    observeMatch(ms)
+    diag(`matchAll ${ms.toFixed(2)}ms input="${value.slice(0, 60)}" matches=${result.length}`)
+    return result
   }
 
   const label = (): string => {
@@ -159,11 +159,14 @@ function PromptWithHistoryAutocomplete(props: {
     if (lineText.content !== text) {
       lineText.content = text
       props.api.renderer.requestRender()
+      countRender()
+      if (text) diag(`render suggestion="${text.slice(0, 70)}"`)
     }
   }
 
   const update = () => {
     if (disposed) return
+    const t0 = performance.now()
     const value = focusedText()
     const changed = value !== lastInput
     lastInput = value
@@ -172,6 +175,12 @@ function PromptWithHistoryAutocomplete(props: {
       matchIndex = 0
       render()
     }
+    const ms = performance.now() - t0
+    observePoll(ms)
+    // Only log individual ticks when something happened or the tick was slow;
+    // a line per 50ms tick would drown everything else.
+    if (changed && value) diag(`poll changed len=${value.length} took=${ms.toFixed(2)}ms`)
+    else if (ms > 2) diag(`poll slow ${ms.toFixed(2)}ms changed=${changed}`)
   }
 
   // Keep the line in sync even when the poll misses (e.g. history refresh).
@@ -179,7 +188,9 @@ function PromptWithHistoryAutocomplete(props: {
   // writing into a renderable that no longer exists.
   const unsubscribeIdle = props.api.event.on("session.idle", () => {
     if (disposed) return
+    const endIdle = span("loadHistory@idle")
     entries = loadHistory()
+    observeHistory(endIdle(`entries=${entries.length}`), entries.length)
     matches = runtimeEnabled ? compute(lastInput) : []
     matchIndex = 0
     render()
@@ -188,6 +199,7 @@ function PromptWithHistoryAutocomplete(props: {
   const cycle = (delta: number): boolean => {
     if (matches.length < 2) return false
     matchIndex = (matchIndex + delta + matches.length) % matches.length
+    diag(`cycle delta=${delta} -> ${matchIndex + 1}/${matches.length}`)
     render()
     props.api.renderer.requestRender()
     return true
@@ -196,12 +208,15 @@ function PromptWithHistoryAutocomplete(props: {
   const accept = (): boolean => {
     const match = matches[matchIndex]
     if (!match || disposed) return false
+    const endAccept = span("accept")
     const ed = (
       props.api.renderer as unknown as { currentFocusedEditor?: { setText(t: string): void; gotoBufferEnd(): void } }
     ).currentFocusedEditor
+    let via = "promptRef"
     if (ed && typeof ed.setText === "function") {
       ed.setText(match.text)
       ed.gotoBufferEnd()
+      via = "setText"
     } else {
       currentPromptRef?.set({ input: match.text, mode: currentPromptRef.current.mode, parts: [] })
     }
@@ -211,6 +226,7 @@ function PromptWithHistoryAutocomplete(props: {
     matchIndex = 0
     render()
     props.api.renderer.requestRender()
+    endAccept(`via=${via} text="${match.text.slice(0, 60)}"`)
     return true
   }
 
@@ -222,7 +238,9 @@ function PromptWithHistoryAutocomplete(props: {
   }
 
   onMount(() => {
-    diag(`slot mounted: ${props.slot}`)
+    diag(
+      `slot mounted: ${props.slot} entries=${entries.length} interval=${PROMPT_SYNC_MS}ms minLen=${MIN_INPUT_LENGTH}`,
+    )
     const timer = setInterval(update, PROMPT_SYNC_MS)
     onCleanup(() => {
       diag(`slot unmounted: ${props.slot}`)
@@ -271,6 +289,7 @@ function PromptWithHistoryAutocomplete(props: {
         }
       }
       if (evt.name === "escape" && matches.length) {
+        diag(`dismiss input="${lastInput.slice(0, 60)}" matches=${matches.length}`)
         dismissedInput = lastInput
         matches = []
         matchIndex = 0
@@ -286,13 +305,16 @@ function PromptWithHistoryAutocomplete(props: {
       keyGuard(evt as never)
     }
     props.api.renderer.keyInput.prependListener("keypress", guard as never)
+    diag(`keypress listener attached: prependListener slot=${props.slot}`)
     onCleanup(() => {
       props.api.renderer.keyInput.removeListener("keypress", guard as never)
+      diag(`keypress listener removed slot=${props.slot}`)
     })
 
     useKeyboard((evt) => {
       keyGuard(evt as never)
     })
+    diag(`useKeyboard listener attached slot=${props.slot}`)
   })
 
   return (
@@ -315,10 +337,16 @@ function PromptWithHistoryAutocomplete(props: {
 
 const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) => {
   const opts = (options ?? {}) as AutocompleteOptions
-  debugEnabled = opts.debug === true
+  // First act: without this call every diag/span below is a no-op.
+  configureDiag(opts)
+  const endTui = span("tui()")
+  diag(
+    `tui() entry options=${JSON.stringify({ enabled: opts.enabled, acceptKey: opts.acceptKey, cycleKey: opts.cycleKey, cycleKeyBack: opts.cycleKeyBack, debug: opts.debug })}`,
+  )
 
   if (opts.enabled === false) {
     diag("tui() invoked but disabled via options")
+    endTui("result=disabled")
     return
   }
 
@@ -326,14 +354,16 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
   diag(
     `module evaluated ${moduleEvaluatedAt} | tui() loads=${registry.loads} registered=${registry.registered} pid=${process.pid}`,
   )
+  const endDb = span("databasePath()")
   const resolvedDb = databasePath()
-  diag(`database ${resolvedDb} exists=${existsSync(resolvedDb)}`)
+  endDb(`path=${resolvedDb} exists=${existsSync(resolvedDb)}`)
 
   // Register at most once across ALL module instances: the state lives on
   // globalThis, so a second evaluation of this module cannot mount a second
   // prompt. (A module-scope flag is not enough — it is per module instance.)
   if (registry.registered) {
     diag("tui() skipped: slot plugin already registered")
+    endTui("result=already-registered")
     return
   }
   registry.registered = true
@@ -344,12 +374,17 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
   cycleKeyBack = parseCombo(opts.cycleKeyBack, { name: "up", ctrl: true, shift: false, meta: false, alt: false })
   previewChars = opts.maxPreviewChars ?? DEFAULT_PREVIEW_CHARS
   runtimeEnabled = true
+  diag(
+    `combos accept=${JSON.stringify(acceptKey)} cycleFwd=${JSON.stringify(cycleKey)} cycleBack=${JSON.stringify(cycleKeyBack)}`,
+  )
 
   let currentPrompt: TuiPromptRef | undefined
   const bindPrompt = (ref: TuiPromptRef | undefined) => {
     currentPrompt = ref
+    diag(`prompt ref ${ref ? "bound" : "cleared"}`)
   }
 
+  const endCommands = span("api.command.register")
   api.command?.register(() => [
     {
       title: "Toggle history autocomplete",
@@ -358,6 +393,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
       category: "Prompt",
       onSelect() {
         runtimeEnabled = !runtimeEnabled
+        diag(`command autocomplete.toggle -> ${runtimeEnabled ? "on" : "off"}`)
         api.renderer.requestRender()
       },
     },
@@ -368,25 +404,37 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
       category: "Prompt",
       onSelect() {
         if (!runtimeEnabled) return
+        const endAccept = span("command autocomplete.accept")
         // Read the input from the focused editor — the prompt ref is not
         // reliably bound when the slot host passes its own ref.
         const ed = (api.renderer as unknown as {
           currentFocusedEditor?: { plainText?: string; setText(t: string): void; gotoBufferEnd(): void }
         }).currentFocusedEditor
         const value = typeof ed?.plainText === "string" ? ed.plainText : (currentPrompt?.current.input ?? "")
-        if (value.length < MIN_INPUT_LENGTH) return
-        const match = bestMatch(value, loadHistory())
-        if (!match) return
+        if (value.length < MIN_INPUT_LENGTH) {
+          endAccept("result=too-short")
+          return
+        }
+        const endHist = span("loadHistory")
+        const history = loadHistory()
+        endHist(`entries=${history.length}`)
+        const match = bestMatch(value, history)
+        if (!match) {
+          endAccept("result=no-match")
+          return
+        }
         if (ed && typeof ed.setText === "function") {
           ed.setText(match.text)
           ed.gotoBufferEnd()
         } else {
           currentPrompt?.set({ input: match.text, mode: currentPrompt.current.mode, parts: [] })
         }
+        endAccept("result=accepted via=palette")
         api.renderer.requestRender()
       },
     },
   ])
+  endCommands()
 
   // Runtime check (isHostSlotPlugin) requires a string id even though the
   // TuiSlotPlugin type forbids it (id?: never) — runtime wins.
@@ -395,11 +443,13 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
     order: 1,
     slots: {
       home_prompt(_ctx: unknown, value: any) {
+        diag("slot factory called: home_prompt")
         return (
           <PromptWithHistoryAutocomplete api={api} slot="home" bindPrompt={bindPrompt} hostRef={value.ref} />
         )
       },
       session_prompt(_ctx: unknown, value: any) {
+        diag(`slot factory called: session_prompt session_id=${value.session_id} visible=${value.visible} disabled=${value.disabled}`)
         return (
           <PromptWithHistoryAutocomplete
             api={api}
@@ -415,7 +465,10 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
       },
     },
   }
+  const endSlots = span("api.slots.register")
   api.slots.register(slotPlugin as never)
+  endSlots("slots=home_prompt,session_prompt")
+  endTui("result=registered")
 }
 
 const plugin = {

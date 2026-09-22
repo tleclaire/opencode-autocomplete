@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - `maxPreviewChars` option (default `100`): cap for the history preview shown on the suggestion line.
+- Full opt-in instrumentation behind `debug: true` (`src/diag.ts`): lifecycle events at every critical load point (module eval, `tui()` entry with options, DB path, command/slot registration, slot factory/mount/unmount, key-listener attach), per-section timings (`loadHistory` at init/idle/palette, `matchAll`, `accept`, poll ticks), key events (accept/cycle/dismiss with combo) and a rolling summary every 5 s (poll/match/history avg+max, render count) to spot plugin-induced delays. Zero overhead while off; log at `%TEMP%/opencode-autocomplete-diag.log`.
 
 ### Changed
 - Suggestion previews show the entry's first line only — collapsed whitespace, truncated with `…`, and annotated with `(+N lines)` when the entry spans several lines — so pasted blobs (whole mails, code) no longer flood the prompt layout. Accepting still inserts the full entry.
