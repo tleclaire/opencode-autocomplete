@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { TuiPlugin, TuiPluginApi, TuiPromptRef } from "@opencode-ai/plugin/tui"
 import { bestMatch, databasePath, loadHistory, matchAll, type HistoryEntry } from "./history"
+import { DEFAULT_PREVIEW_CHARS, previewOf } from "./preview"
 
 const id = "opencode-autocomplete"
 const PROMPT_SYNC_MS = 50
@@ -19,6 +20,12 @@ export type AutocompleteOptions = {
   cycleKey?: string
   /** Key that cycles backward through multiple matches. Default: "ctrl+up" */
   cycleKeyBack?: string
+  /**
+   * Cap for the history preview on the suggestion line: first line only,
+   * truncated with `…`, multi-line entries annotated `(+N lines)`.
+   * Display-only — accepting still inserts the full entry. Default: 100
+   */
+  maxPreviewChars?: number
   /**
    * Write lifecycle diagnostics (module evaluation, slot mount/unmount) to
    * `%TEMP%/opencode-autocomplete-diag.log`. Off by default; turn it on to
@@ -61,6 +68,7 @@ type ParsedCombo = { name: string; ctrl: boolean; shift: boolean; meta: boolean;
 
 // Runtime toggle (shared across slot instances; module scope survives remounts).
 let runtimeEnabled = true
+let previewChars: number = DEFAULT_PREVIEW_CHARS
 let acceptKey: ParsedCombo = { name: "tab", ctrl: false, shift: false, meta: false, alt: false }
 let cycleKey: ParsedCombo = { name: "down", ctrl: true, shift: false, meta: false, alt: false }
 let cycleKeyBack: ParsedCombo = { name: "up", ctrl: true, shift: false, meta: false, alt: false }
@@ -138,7 +146,11 @@ function PromptWithHistoryAutocomplete(props: {
   const label = (): string => {
     const match = matches[matchIndex]
     if (!match) return ""
-    return matches.length > 1 ? `⇥ (${matchIndex + 1}/${matches.length}) ${match.text}` : `⇥ ${match.text}`
+    // Pasted blobs (whole mails) must never reach this line verbatim: the
+    // container has flexShrink: 0 and would grow to the full entry height.
+    // previewOf() is display-only — accept() still writes match.text in full.
+    const preview = previewOf(match, previewChars)
+    return matches.length > 1 ? `⇥ (${matchIndex + 1}/${matches.length}) ${preview}` : `⇥ ${preview}`
   }
 
   const render = () => {
@@ -330,6 +342,7 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
   acceptKey = parseCombo(opts.acceptKey, { name: "tab", ctrl: false, shift: false, meta: false, alt: false })
   cycleKey = parseCombo(opts.cycleKey, { name: "down", ctrl: true, shift: false, meta: false, alt: false })
   cycleKeyBack = parseCombo(opts.cycleKeyBack, { name: "up", ctrl: true, shift: false, meta: false, alt: false })
+  previewChars = opts.maxPreviewChars ?? DEFAULT_PREVIEW_CHARS
   runtimeEnabled = true
 
   let currentPrompt: TuiPromptRef | undefined

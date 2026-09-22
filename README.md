@@ -58,9 +58,10 @@ Options are passed as the second element of the plugin tuple in `tui.json`:
 | `acceptKey`   | `"tab"`     | Key that accepts the suggestion (combo like `"tab"`, `"right"`, `"ctrl+y"`)                     |
 | `cycleKey`    | `"ctrl+down"`  | Cycle forward through multiple matches (wrap-around)                                            |
 | `cycleKeyBack`| `"ctrl+up"`    | Cycle backward through multiple matches                                                        |
+| `maxPreviewChars` | `100`      | Cap for the history preview on the suggestion line: first line only, truncated with `…`, multi-line entries annotated `(+N lines)`. Display-only — accepting still inserts the full entry |
+| `debug`       | `false` | Write lifecycle diagnostics to `%TEMP%/opencode-autocomplete-diag.log` (Linux/macOS: `/tmp`) — module evaluation, `tui()` invocations, slot mount/unmount. Nothing is written while it is off. |
 
 When several history entries match, the suggestion line shows the position (`⇥ (2/5) …`); cycle with `ctrl+down`/`ctrl+up`, accept the visible one with `acceptKey`.
-| `debug`     | `false` | Write lifecycle diagnostics to `%TEMP%/opencode-autocomplete-diag.log` (Linux/macOS: `/tmp`) — module evaluation, `tui()` invocations, slot mount/unmount. Nothing is written while it is off. |
 
 At runtime you can toggle the plugin on/off via the command palette: **"Toggle history autocomplete"**. Enter always submits the prompt — it never accepts the suggestion.
 

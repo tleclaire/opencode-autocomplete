@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `maxPreviewChars` option (default `100`): cap for the history preview shown on the suggestion line.
+
+### Changed
+- Suggestion previews show the entry's first line only — collapsed whitespace, truncated with `…`, and annotated with `(+N lines)` when the entry spans several lines — so pasted blobs (whole mails, code) no longer flood the prompt layout. Accepting still inserts the full entry.
+
 ## [0.1.0] - 2026-09-22
 
 ### Added
