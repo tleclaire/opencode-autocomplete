@@ -47,7 +47,7 @@ Options are passed as the second element of the plugin tuple in `tui.json`:
 ```json
 {
   "plugin": [
-    ["/path/to/opencode-autocomplete", { "enabled": true, "acceptKey": "tab", "cycleKey": "ctrl+n", "cycleKeyBack": "ctrl+p" }]
+    ["/path/to/opencode-autocomplete", { "enabled": true, "acceptKey": "tab", "cycleKey": "ctrl+down", "cycleKeyBack": "ctrl+up" }]
   ]
 }
 ```
@@ -56,10 +56,10 @@ Options are passed as the second element of the plugin tuple in `tui.json`:
 | ------------- | ----------- | ----------------------------------------------------------------------------------------------- |
 | `enabled`     | `true`      | `false` disables the plugin entirely (no slot, no suggestion line)                              |
 | `acceptKey`   | `"tab"`     | Key that accepts the suggestion (combo like `"tab"`, `"right"`, `"ctrl+y"`)                     |
-| `cycleKey`    | `"ctrl+n"`  | Cycle forward through multiple matches (wrap-around)                                            |
-| `cycleKeyBack`| `"ctrl+p"`  | Cycle backward through multiple matches                                                        |
+| `cycleKey`    | `"ctrl+down"`  | Cycle forward through multiple matches (wrap-around)                                            |
+| `cycleKeyBack`| `"ctrl+up"`    | Cycle backward through multiple matches                                                        |
 
-When several history entries match, the suggestion line shows the position (`⇥ (2/5) …`); cycle with `cycleKey`/`cycleKeyBack`, accept the visible one with `acceptKey`.
+When several history entries match, the suggestion line shows the position (`⇥ (2/5) …`); cycle with `ctrl+down`/`ctrl+up`, accept the visible one with `acceptKey`.
 | `debug`     | `false` | Write lifecycle diagnostics to `%TEMP%/opencode-autocomplete-diag.log` (Linux/macOS: `/tmp`) — module evaluation, `tui()` invocations, slot mount/unmount. Nothing is written while it is off. |
 
 At runtime you can toggle the plugin on/off via the command palette: **"Toggle history autocomplete"**. Enter always submits the prompt — it never accepts the suggestion.

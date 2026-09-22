@@ -15,9 +15,9 @@ export type AutocompleteOptions = {
   enabled?: boolean
   /** Key that accepts the suggestion. Default: "tab" */
   acceptKey?: string
-  /** Key that cycles forward through multiple matches. Default: "ctrl+n" */
+  /** Key that cycles forward through multiple matches. Default: "ctrl+down" */
   cycleKey?: string
-  /** Key that cycles backward through multiple matches. Default: "ctrl+p" */
+  /** Key that cycles backward through multiple matches. Default: "ctrl+up" */
   cycleKeyBack?: string
   /**
    * Write lifecycle diagnostics (module evaluation, slot mount/unmount) to
@@ -62,8 +62,8 @@ type ParsedCombo = { name: string; ctrl: boolean; shift: boolean; meta: boolean;
 // Runtime toggle (shared across slot instances; module scope survives remounts).
 let runtimeEnabled = true
 let acceptKey: ParsedCombo = { name: "tab", ctrl: false, shift: false, meta: false, alt: false }
-let cycleKey: ParsedCombo = { name: "n", ctrl: true, shift: false, meta: false, alt: false }
-let cycleKeyBack: ParsedCombo = { name: "p", ctrl: true, shift: false, meta: false, alt: false }
+let cycleKey: ParsedCombo = { name: "down", ctrl: true, shift: false, meta: false, alt: false }
+let cycleKeyBack: ParsedCombo = { name: "up", ctrl: true, shift: false, meta: false, alt: false }
 
 const parseCombo = (spec: string | undefined, fallback: ParsedCombo): ParsedCombo => {
   if (!spec) return fallback
@@ -328,8 +328,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
   diag("registering slot plugin")
 
   acceptKey = parseCombo(opts.acceptKey, { name: "tab", ctrl: false, shift: false, meta: false, alt: false })
-  cycleKey = parseCombo(opts.cycleKey, { name: "n", ctrl: true, shift: false, meta: false, alt: false })
-  cycleKeyBack = parseCombo(opts.cycleKeyBack, { name: "p", ctrl: true, shift: false, meta: false, alt: false })
+  cycleKey = parseCombo(opts.cycleKey, { name: "down", ctrl: true, shift: false, meta: false, alt: false })
+  cycleKeyBack = parseCombo(opts.cycleKeyBack, { name: "up", ctrl: true, shift: false, meta: false, alt: false })
   runtimeEnabled = true
 
   let currentPrompt: TuiPromptRef | undefined
