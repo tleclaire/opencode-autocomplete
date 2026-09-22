@@ -187,13 +187,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
       value: "autocomplete.toggle",
       description: `Enable/disable history autocomplete (currently ${runtimeEnabled ? "on" : "off"})`,
       category: "Prompt",
-      hidden: !currentPrompt,
       onSelect() {
         runtimeEnabled = !runtimeEnabled
-        if (!runtimeEnabled && currentPrompt) {
-          // Clear any visible suggestion immediately.
-          currentPrompt.set({ input: currentPrompt.current.input, mode: currentPrompt.current.mode, parts: [] })
-        }
         api.renderer.requestRender()
       },
     },
@@ -202,15 +197,23 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
       value: "autocomplete.accept",
       description: "Accept the current history autocomplete suggestion",
       category: "Prompt",
-      hidden: !currentPrompt,
       onSelect() {
-        if (!currentPrompt || !runtimeEnabled) return
-        const value = currentPrompt.current.input
+        if (!runtimeEnabled) return
+        // Read the input from the focused editor — the prompt ref is not
+        // reliably bound when the slot host passes its own ref.
+        const ed = (api.renderer as unknown as {
+          currentFocusedEditor?: { plainText?: string; setText(t: string): void; gotoBufferEnd(): void }
+        }).currentFocusedEditor
+        const value = typeof ed?.plainText === "string" ? ed.plainText : (currentPrompt?.current.input ?? "")
         if (value.length < MIN_INPUT_LENGTH) return
         const match = bestMatch(value, loadHistory())
         if (!match) return
-        currentPrompt.set({ input: match.text, mode: currentPrompt.current.mode, parts: [] })
-        currentPrompt.focus()
+        if (ed && typeof ed.setText === "function") {
+          ed.setText(match.text)
+          ed.gotoBufferEnd()
+        } else {
+          currentPrompt?.set({ input: match.text, mode: currentPrompt.current.mode, parts: [] })
+        }
         api.renderer.requestRender()
       },
     },
