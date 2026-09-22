@@ -7,6 +7,25 @@ const id = "opencode-autocomplete"
 const PROMPT_SYNC_MS = 50
 const MIN_INPUT_LENGTH = 4
 
+export type AutocompleteOptions = {
+  /** Master switch. Set to false to disable the plugin entirely. Default: true */
+  enabled?: boolean
+  /** Key that accepts the suggestion. Default: "tab" */
+  acceptKey?: string
+}
+
+// Runtime toggle (shared across slot instances; module scope survives remounts).
+let runtimeEnabled = true
+let acceptKeyName = "tab"
+
+const keyNameFor = (acceptKey: string | undefined): string => {
+  const k = (acceptKey ?? "tab").toLowerCase()
+  // Common aliases -> opentui key names
+  if (k === "esc" || k === "escape") return "escape"
+  if (k === "return" || k === "enter") return "return"
+  return k
+}
+
 /**
  * Solid's reactivity does NOT work across the plugin boundary: the plugin
  * bundles its own solid-js instance while the host TUI uses its own, so
@@ -52,8 +71,8 @@ function PromptWithHistoryAutocomplete(props: {
     const value = focusedText()
     const changed = value !== lastInput
     lastInput = value
-    if (changed) {
-      currentSuggestion = compute(value)
+    if (changed || (!runtimeEnabled && currentSuggestion)) {
+      currentSuggestion = runtimeEnabled ? compute(value) : undefined
       const label = currentSuggestion ? `⇥ ${currentSuggestion.text}` : ""
       render(label)
     }
@@ -62,7 +81,7 @@ function PromptWithHistoryAutocomplete(props: {
   // Keep the line in sync even when the poll misses (e.g. history refresh).
   props.api.event.on("session.idle", () => {
     entries = loadHistory()
-    currentSuggestion = compute(lastInput)
+    currentSuggestion = runtimeEnabled ? compute(lastInput) : undefined
     render(currentSuggestion ? `⇥ ${currentSuggestion.text}` : "")
   })
 
@@ -102,7 +121,8 @@ function PromptWithHistoryAutocomplete(props: {
     const keyGuard = (
       evt: { name?: string; raw?: string; sequence?: string; preventDefault: () => void; stopPropagation: () => void },
     ): boolean => {
-      if (evt.name === "tab" && currentSuggestion) {
+      if (!runtimeEnabled) return false
+      if (evt.name === acceptKeyName && currentSuggestion) {
         if (accept()) {
           evt.preventDefault()
           evt.stopPropagation()
@@ -151,7 +171,11 @@ function PromptWithHistoryAutocomplete(props: {
   )
 }
 
-const tui: TuiPlugin = async (api: TuiPluginApi) => {
+const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) => {
+  const opts = (options ?? {}) as AutocompleteOptions
+  acceptKeyName = keyNameFor(opts.acceptKey)
+  runtimeEnabled = opts.enabled !== false
+
   let currentPrompt: TuiPromptRef | undefined
   const bindPrompt = (ref: TuiPromptRef | undefined) => {
     currentPrompt = ref
@@ -159,13 +183,28 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
 
   api.command?.register(() => [
     {
+      title: "Toggle history autocomplete",
+      value: "autocomplete.toggle",
+      description: `Enable/disable history autocomplete (currently ${runtimeEnabled ? "on" : "off"})`,
+      category: "Prompt",
+      hidden: !currentPrompt,
+      onSelect() {
+        runtimeEnabled = !runtimeEnabled
+        if (!runtimeEnabled && currentPrompt) {
+          // Clear any visible suggestion immediately.
+          currentPrompt.set({ input: currentPrompt.current.input, mode: currentPrompt.current.mode, parts: [] })
+        }
+        api.renderer.requestRender()
+      },
+    },
+    {
       title: "Accept history suggestion",
       value: "autocomplete.accept",
       description: "Accept the current history autocomplete suggestion",
       category: "Prompt",
       hidden: !currentPrompt,
       onSelect() {
-        if (!currentPrompt) return
+        if (!currentPrompt || !runtimeEnabled) return
         const value = currentPrompt.current.input
         if (value.length < MIN_INPUT_LENGTH) return
         const match = bestMatch(value, loadHistory())
@@ -176,6 +215,8 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
       },
     },
   ])
+
+  if (opts.enabled === false) return
 
   // Runtime check (isHostSlotPlugin) requires a string id even though the
   // TuiSlotPlugin type forbids it (id?: never) — runtime wins.

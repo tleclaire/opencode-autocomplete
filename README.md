@@ -40,6 +40,25 @@ bun install
 bun run build
 ```
 
+## Configuration
+
+Options are passed as the second element of the plugin tuple in `tui.json`:
+
+```json
+{
+  "plugin": [
+    ["/path/to/opencode-autocomplete", { "enabled": true, "acceptKey": "tab" }]
+  ]
+}
+```
+
+| Option      | Default | Description                                                        |
+| ----------- | ------- | ------------------------------------------------------------------ |
+| `enabled`   | `true`  | `false` disables the plugin entirely (no slot, no suggestion line) |
+| `acceptKey` | `"tab"` | Key that accepts the suggestion (opentui key name, e.g. `"right"`) |
+
+At runtime you can toggle the plugin on/off via the command palette: **"Toggle history autocomplete"**. Enter always submits the prompt — it never accepts the suggestion.
+
 ## Gotchas (learned the hard way)
 
 1. **TUI plugins load from `tui.json`, not `opencode.json`** — `TuiConfig.pluginOrigins()` only reads `tui.json` files. Register in both.
