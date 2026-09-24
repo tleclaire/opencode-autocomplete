@@ -415,6 +415,10 @@ const tui: TuiPlugin = async (api: TuiPluginApi, options?: AutocompleteOptions) 
           endAccept("result=too-short")
           return
         }
+        if (value.startsWith("/")) {
+          endAccept("result=slash-prefix")
+          return
+        }
         const endHist = span("loadHistory")
         const history = loadHistory()
         endHist(`entries=${history.length}`)

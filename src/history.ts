@@ -6,6 +6,12 @@ import { isAbsolute, join } from "node:path"
 export type HistoryEntry = {
   text: string
   time: number
+  /**
+   * Precomputed lowercase of `text` (set by loadHistory). Matching runs on
+   * every keystroke over up to MAX_ENTRIES rows — lowercasing them each time
+   * dominated the per-keystroke cost.
+   */
+  lower?: string
 }
 
 const MAX_ENTRIES = 2000
@@ -96,7 +102,7 @@ export function loadHistory(): HistoryEntry[] {
       const text = (row.text ?? "").trim()
       if (text.length < MIN_LENGTH || seen.has(text)) continue
       seen.add(text)
-      out.push({ text, time: row.time })
+      out.push({ text, time: row.time, lower: text.toLowerCase() })
       if (out.length >= MAX_ENTRIES) break
     }
     return out
@@ -111,17 +117,21 @@ export function loadHistory(): HistoryEntry[] {
  * All history matches for the current input, in preference order:
  * prefix matches (newest first), then substring matches (newest first).
  * Never includes the input itself.
+ *
+ * Inputs starting with `/` never match: that is the host's slash-command
+ * prefix and must not be swallowed by history completion.
  */
 export function matchAll(input: string, entries: HistoryEntry[]): HistoryEntry[] {
   const value = input.trim()
   if (value.length < MIN_LENGTH) return []
+  if (value.startsWith("/")) return []
   const lower = value.toLowerCase()
 
   const prefixes: HistoryEntry[] = []
   const substrings: HistoryEntry[] = []
   for (const entry of entries) {
     if (entry.text === value) continue
-    const entryLower = entry.text.toLowerCase()
+    const entryLower = entry.lower ?? (entry.lower = entry.text.toLowerCase())
     if (entryLower.startsWith(lower)) prefixes.push(entry)
     else if (entryLower.includes(lower)) substrings.push(entry)
   }

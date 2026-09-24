@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - Suggestion previews show the entry's first line only — collapsed whitespace, truncated with `…`, and annotated with `(+N lines)` when the entry spans several lines — so pasted blobs (whole mails, code) no longer flood the prompt layout. Accepting still inserts the full entry.
+- Matching runs on a precomputed lowercase copy of each history entry instead of lowercasing up to 2000 entries per keystroke.
+- Debug log is appended through a buffered async stream instead of `appendFileSync`, so logging no longer blocks the keystroke path.
+
+### Fixed
+- Inputs starting with `/` no longer trigger history completion (slash commands were delayed/fought over by the suggestion line); the palette accept command bails out the same way before reloading history.
 
 ## [0.1.0] - 2026-09-22
 

@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs"
+import { createWriteStream, type WriteStream } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -26,6 +26,23 @@ const moduleInstance = Math.random().toString(36).slice(2, 8)
 
 let enabled = false
 let summaryTimer: ReturnType<typeof setInterval> | undefined
+// Async append stream: appendFileSync blocks the event loop on every log
+// line — with debug on that cost landed on each keystroke. Buffered writes
+// go to the kernel instead; errors are swallowed (diagnostics never throw).
+let logStream: WriteStream | undefined
+
+const getStream = (): WriteStream | undefined => {
+  if (logStream) return logStream
+  try {
+    logStream = createWriteStream(DIAG_FILE, { flags: "a" })
+    logStream.on("error", () => {
+      logStream = undefined
+    })
+    return logStream
+  } catch {
+    return undefined
+  }
+}
 
 // Rolling stats for the summary line. `sum`/`max`/`n` are per window and
 // reset with each flush so a one-off spike and a sustained regression are
@@ -67,7 +84,7 @@ const flushSummary = () => {
 const write = (message: string) => {
   if (!enabled) return
   try {
-    appendFileSync(DIAG_FILE, `${new Date().toISOString()} [${moduleInstance}] ${message}\n`)
+    getStream()?.write(`${new Date().toISOString()} [${moduleInstance}] ${message}\n`)
   } catch {
     // diagnostics must never break the plugin
   }
