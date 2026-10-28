@@ -1,6 +1,6 @@
 {
   "name": "opencode-autocomplete",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "History-based autocomplete for the opencode TUI prompt",
   "type": "module",
   "main": "./dist/index.js",

@@ -2,34 +2,27 @@
 
 History-based autocomplete for the [opencode](https://github.com/sst/opencode) TUI prompt.
 
-As you type, the plugin shows your most recent matching prompt from history as a ghost-text line below the input. **Tab** accepts it, **Esc** dismisses it.
+As you type, the plugin shows your most recent matching prompt from history as a ghost-text line in the prompt footer, directly under the input. **Tab** accepts it, **Esc** dismisses it.
 
 ```
 > können wir die tests ausf
-  können wir die tests ausführen?        ← ghost text, Tab to accept
+  ⇥ können wir die tests ausführen?        ← ghost text, Tab to accept
 ```
 
 ## How it works
 
 - History is read directly from opencode's SQLite database via `bun:sqlite` (read-only, WAL-safe): `message` (role=user) joined with `part` (type=text), deduplicated, minimum length 4, newest first, capped at 2000 entries. The path mirrors opencode's own resolution: `OPENCODE_DB` wins (absolute path, `:memory:`, or a name inside the data dir), otherwise `<XDG_DATA_HOME || <homedir>/.local/share>/opencode/` → `opencode.db`, or `opencode-<channel>.db` on non-standard release channels. opencode uses that XDG layout on **every** platform — Windows and macOS included — so `os.homedir()` is the portable primitive (`process.env.HOME` is unset on Windows).
-- The TUI module replaces the host prompt (`home_prompt` and `session_prompt`, both registered by the host with `mode: "replace"`) with its own prompt plus a suggestion line, and renders the suggestion imperatively — Solid reactivity does not work across the plugin/host boundary (separate solid-js instances), so the plugin polls the focused editor every 50 ms and writes the suggestion via `textRenderable.content`.
-- Accept writes into the real host editor via `setText()` + `gotoBufferEnd()`.
+- The TUI module adds a contribution to the host's `prompt.footer` slot (`prepend`, so it sits under the start of the input) and never touches the host prompt itself. The suggestion is rendered imperatively inside that slot — Solid reactivity does not work across the plugin/host boundary (separate solid-js instances), so the plugin polls the focused editor every 50 ms.
+- Accept writes into the real host editor via `currentFocusedEditor.setText()` + `gotoBufferEnd()`.
+- Accepted text is recorded as the last seen input, so the line does not immediately reappear for the text you just inserted.
 
 ## Install
 
-Add the plugin path to **both** config files (the server module comes from `opencode.json`, the TUI module from `tui.json`):
+Add the plugin path to `~/.config/opencode/cli.json` (V2 TUI config). The TUI module is what provides the feature; no server-side entry is needed.
 
-`~/.config/opencode/opencode.json`:
 ```json
 {
-  "plugin": ["/path/to/opencode-autocomplete"]
-}
-```
-
-`~/.config/opencode/tui.json`:
-```json
-{
-  "plugin": ["/path/to/opencode-autocomplete"]
+  "plugins": ["/path/to/opencode-autocomplete"]
 }
 ```
 
@@ -40,17 +33,24 @@ bun install
 bun run build
 ```
 
+`src/index.ts` still exports a valid V2 server plugin definition (a no-op), so the package can additionally be listed in `opencode.json` without breaking anything — but it registers no behaviour there.
+
 ## Configuration
 
-Options are passed as the second element of the plugin tuple in `tui.json`:
+Options are passed per plugin entry through the object form of `cli.json`:
 
 ```json
 {
-  "plugin": [
-    ["/path/to/opencode-autocomplete", { "enabled": true, "acceptKey": "tab", "cycleKey": "ctrl+down", "cycleKeyBack": "ctrl+up" }]
+  "plugins": [
+    {
+      "package": "/path/to/opencode-autocomplete",
+      "options": { "acceptKey": "tab", "cycleKey": "ctrl+down", "cycleKeyBack": "ctrl+up" }
+    }
   ]
 }
 ```
+
+The bare-string form still works and uses all defaults.
 
 | Option        | Default     | Description                                                                                     |
 | ------------- | ----------- | ----------------------------------------------------------------------------------------------- |
@@ -59,25 +59,25 @@ Options are passed as the second element of the plugin tuple in `tui.json`:
 | `cycleKey`    | `"ctrl+down"`  | Cycle forward through multiple matches (wrap-around)                                            |
 | `cycleKeyBack`| `"ctrl+up"`    | Cycle backward through multiple matches                                                        |
 | `maxPreviewChars` | `100`      | Cap for the history preview on the suggestion line: first line only, truncated with `…`, multi-line entries annotated `(+N lines)`. Display-only — accepting still inserts the full entry |
-| `debug`       | `false` | Full instrumentation to `%TEMP%/opencode-autocomplete-diag.log` (Linux/macOS: `/tmp`): lifecycle (module eval, `tui()` entry/options, DB path, command/slot registration, slot factory/mount/unmount, key-listener attach), per-section timings (`loadHistory`, `matchAll`, `accept`, poll ticks with avg/max), key events (accept/cycle/dismiss) and a rolling summary every 5s for spotting plugin-induced delays. Nothing is written while it is off. |
+| `debug`       | `false` | Full instrumentation to `%TEMP%/opencode-autocomplete-diag.log` (Linux/macOS: `/tmp`): lifecycle (`setup()` entry/options, DB path, slot register/dispose/cleanup, skipped setup), per-section timings (`loadHistory` at init and on palette reload, `matchAll`, `accept`, poll ticks with avg/max), command events (accept/cycle/dismiss/toggle) and a rolling summary every 5s for spotting plugin-induced delays. Nothing is written while it is off. |
 
 When several history entries match, the suggestion line shows the position (`⇥ (2/5) …`); cycle with `ctrl+down`/`ctrl+up`, accept the visible one with `acceptKey`. Inputs starting with `/` never trigger history completion — slash commands belong to the host.
 
-At runtime you can toggle the plugin on/off via the command palette: **"Toggle history autocomplete"**. Enter always submits the prompt — it never accepts the suggestion.
+At runtime you can toggle the plugin on/off via the command palette: **"Toggle history autocomplete"** (there is also **"Accept history suggestion (palette)"** for a single accept). Enter always submits the prompt — it never accepts the suggestion.
 
 ## Gotchas (learned the hard way)
 
-1. **TUI plugins load from `tui.json`, not `opencode.json`** — `TuiConfig.pluginOrigins()` only reads `tui.json` files. Register in both.
-2. **Slot registration requires `id: string`** — `isHostSlotPlugin` checks for it at runtime, but the `TuiSlotPlugin` type forbids it (`id?: never`). Cast with `as never`.
-3. **esbuild needs `--jsx=automatic --jsx-import-source=@opentui/solid`** — otherwise it emits `React.createElement`, the slot renderer returns React objects, and the TUI silently falls back to the default prompt.
-4. **Solid reactivity does not cross the plugin boundary** — the plugin bundles its own solid-js/@opentui, the host TUI has its own. Signals don't fire across instances. Go fully imperative: poll `renderer.currentFocusedEditor.plainText`, write via `textRenderable.content` (`.text` doesn't exist — silent no-op).
-5. **Accepting input**: `currentFocusedEditor.setText(text)` + `gotoBufferEnd()` writes to the real host editor. `TuiPromptRef.set()` is a no-op unless the ref *is* the focused editor.
-6. **Only ONE prompt-replacing plugin may be registered.** The host registers `home_prompt`/`session_prompt` with `mode: "replace"`, and for `replace` it renders **every** contribution of that slot instead of picking a single winner. A second plugin that renders the prompt — e.g. `opencode-snippets`, which also ships a `PromptWithSnippetAutocomplete` with `order: 100` — shows up as a **second, unfocused prompt box** (smaller `order` renders on top). If you see two prompt boxes, check `tui.json` for another prompt plugin before suspecting this one.
-7. **Everything that writes to a renderable must be unmount-guarded.** The slot is torn down when its view goes away, but a `setInterval` tick or an event handler can still be in flight. Writing to a disposed renderable kills the native renderer **without a catchable JS error and without any log entry** — it looks like a silent crash. Hence: a `disposed` flag set in `onCleanup`, checked before every write, and `api.event.on()` must be unsubscribed (it returns the unsubscribe function).
+1. **TUI plugins load from `cli.json`, not `opencode.json`.** `opencode.json`'s `plugin` list is the server-side plugin list; a TUI-only plugin registered there does nothing. Register in `cli.json` (V1 `tui.json` is migrated once and should not be edited anymore).
+2. **esbuild needs `--jsx=automatic --jsx-import-source=@opentui/solid`** — otherwise it emits `React.createElement`, the slot renderer returns React objects, and the TUI silently renders nothing.
+3. **Solid reactivity does not cross the plugin boundary** — the plugin bundles its own solid-js/@opentui, the host TUI has its own. Signals don't fire across instances, so the poller is imperative and only the footer line is reactive.
+4. **V2 has no prompt-text API.** `ctx.renderer.currentFocusedEditor.plainText` is the only way to see what is being typed, which is why the 50 ms poll exists. Accept writes back through the same object: `setText()` + `gotoBufferEnd()`.
+5. **`ctx.keymap.layer()` needs both `commands` and `bindings`.** Only command ids listed in `bindings` get key bindings — everything else stays palette-only. Commands must `return false` when they have nothing to do, otherwise `tab` (agent cycle) and `escape` (interrupt) get swallowed.
+6. **The prompt footer is a right-aligned status row.** `prepend: "prompt.footer"` puts the suggestion under the start of the input; `append` lands in the bottom-right corner next to the host's own status text.
+7. **Reload must dispose, not re-register.** The setup returns a disposer that clears the poll timer and unregisters the slot; a globalThis registry disposes the previous instance first, so a plugin reload replaces the line instead of stacking a second one or losing it. Writing to a disposed renderable kills the native renderer without a catchable JS error and without a log entry — it looks like a silent crash.
 
 ## Requirements
 
-- opencode ≥ 1.18.31 (V1 plugin API)
+- opencode ≥ 2.2.0 (V2 TUI plugin API: `{ id, setup(ctx) }`)
 - Bun (for `bun:sqlite`)
 
 ## License
