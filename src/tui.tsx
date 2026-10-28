@@ -52,12 +52,13 @@ export type AutocompleteOptions = {
 }
 
 // --- shared state ---------------------------------------------------------
-// One slot and one poller per process, whatever happens to module evaluation.
-type Registry = { loads: number; registered: boolean }
+// One slot and one poller per process, whatever happens to module evaluation
+// or a plugin reload. The previous instance is disposed before a new one
+// registers, so a reload cannot leave a stale line behind or stack two of them.
+type Registry = { loads: number; dispose?: () => void }
 const registryKey = "__opencodeAutocompleteRegistry"
 const registry = ((globalThis as unknown as Record<string, Registry>)[registryKey] ??= {
   loads: 0,
-  registered: false,
 })
 
 let runtimeEnabled = true
@@ -87,7 +88,7 @@ type TuiContext = {
   }
   theme?: { text?: Record<string, string> }
   ui: {
-    slot(definition: { append?: string; render: () => unknown }): (() => void) | void
+    slot(definition: { append?: string; prepend?: string; render: () => unknown }): (() => void) | void
   }
   keymap: {
     layer(factory: () => {
@@ -218,13 +219,14 @@ export default {
     }
 
     registry.loads++
-    diag(`setup entry loads=${registry.loads} registered=${registry.registered} pid=${process.pid}`)
+    diag(`setup entry loads=${registry.loads} pid=${process.pid}`)
 
-    if (registry.registered) {
-      diag("setup skipped: already registered")
-      return
+    // A reload must replace the previous instance, not skip registration.
+    if (registry.dispose) {
+      diag("setup: disposing previous instance")
+      registry.dispose()
+      registry.dispose = undefined
     }
-    registry.registered = true
 
     previewChars = opts.maxPreviewChars ?? DEFAULT_PREVIEW_CHARS
     runtimeEnabled = true
@@ -239,11 +241,18 @@ export default {
     diag(`loadHistory ${histMs.toFixed(2)}ms entries=${entries.length}`)
 
     // --- suggestion line ---------------------------------------------------
-    ctx.ui.slot({
-      append: "prompt.footer",
+    // `prepend`, not `append`: the prompt footer is a status row whose own
+    // content sits at the right edge, so an appended contribution lands there
+    // too (observed in 2.2.0). Prepending puts the suggestion left, directly
+    // under the start of the input.
+    const muted = ctx.theme?.text?.muted
+    const unregisterSlot = ctx.ui.slot({
+      prepend: "prompt.footer",
       render: () => (
         <Show when={label()}>
-          <text wrapMode="none">{label()}</text>
+          <text wrapMode="none" flexShrink={0} fg={muted}>
+            {label()}
+          </text>
         </Show>
       ),
     })
@@ -338,10 +347,13 @@ export default {
     const timer = setInterval(() => poll(ctx), PROMPT_SYNC_MS)
     diag(`poll started interval=${PROMPT_SYNC_MS}ms minLen=${MIN_INPUT_LENGTH}`)
 
-    return () => {
+    const dispose = () => {
       diag("setup cleanup")
       clearInterval(timer)
+      if (typeof unregisterSlot === "function") unregisterSlot()
       setLabel("")
     }
+    registry.dispose = dispose
+    return dispose
   },
 }
